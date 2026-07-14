@@ -1,0 +1,590 @@
+let gameState = "title"; 
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+let score = 0;
+
+let timeLeft = 240;  // ★ 制限時間（秒）
+
+const tileSize = 40;
+
+const player = { 
+  x: tileSize * 1 + tileSize / 2 - 15, 
+  y: tileSize * 1 + tileSize / 2 - 15,
+  size: 30, 
+  speed: 4,
+  vx: 0,
+  vy: 0
+};
+
+let goal = null;
+let goalRoomX = 0;
+let goalRoomY = 0;
+
+const keys = {};
+
+document.addEventListener("keyup", (e) => {
+  keys[e.key] = false;
+});
+
+document.addEventListener("keydown", (e) => {
+  keys[e.key] = true;
+
+  if (gameState === "title" && e.key === " ") {
+    gameState = "play";
+  }
+
+  if (gameState === "goal" && e.key === " ") {
+  resetGame();      // ★ 追加：ゲームを完全リセット
+  gameState = "title";}
+
+  if (gameState === "gameover" && e.key === " ") {
+    resetGame();
+    gameState = "title";
+  }
+});
+
+let stage = 0;
+
+const mazeRooms = {};
+const coinRooms = {};
+
+function generateMaze(width, height) {
+  const maze = Array.from({ length: height }, () =>
+    Array.from({ length: width }, () => 1)
+  );
+
+  function carve(x, y) {
+    const dirs = [
+      [0, -2],
+      [2, 0],
+      [0, 2],
+      [-2, 0]
+    ];
+
+    for (let i = dirs.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [dirs[i], dirs[j]] = [dirs[j], dirs[i]];
+    }
+
+    for (const [dx, dy] of dirs) {
+      const nx = x + dx;
+      const ny = y + dy;
+
+      if (ny > 0 && ny < height - 1 && nx > 0 && nx < width - 1) {
+        if (maze[ny][nx] === 1) {
+          maze[ny][nx] = 0;
+          maze[y + dy / 2][x + dx / 2] = 0;
+          carve(nx, ny);
+        }
+      }
+    }
+  }
+
+  maze[1][1] = 0;
+  carve(1, 1);
+
+  return maze;
+}
+
+let roomX = 0;
+let roomY = 0;
+
+goalRoomX = Math.floor(Math.random() * 7) - 3;
+goalRoomY = Math.floor(Math.random() * 7) - 3;
+
+// ★★★ 正しい順番ここから ★★★
+
+// ① map を生成
+const map = generateMaze(21, 21);
+
+// ★ ② regenerateMaze より前に保存する（ここが重要）
+mazeRooms["0,0"] = map.map(row => [...row]);
+
+// ③ 壁生成
+const walls = [];
+for (let y = 0; y < map.length; y++) {
+  for (let x = 0; x < map[y].length; x++) {
+    if (map[y][x] === 1) {
+      walls.push({
+        x: x * tileSize,
+        y: y * tileSize,
+        w: tileSize,
+        h: tileSize
+      });
+    }
+  }
+}
+
+const coinSize = 20;
+const jitter = 42;
+
+
+// ④ コイン生成
+const coins = [];
+for (let y = 0; y < map.length; y++) {
+  for (let x = 0; x < map[y].length; x++) {
+    if (map[y][x] === 0) {
+      const baseX = x * tileSize + tileSize / 2;
+      const baseY = y * tileSize + tileSize / 2;
+
+      const jx = baseX + (Math.random() * jitter - jitter / 2);
+      const jy = baseY + (Math.random() * jitter - jitter / 2);
+
+      if (!isCollidingWithWalls(jx, jy, coinSize)) {
+        coins.push({
+          x: jx,
+          y: jy,
+          size: coinSize,
+          collected: false
+        });
+      }
+    }
+  }
+}
+
+// ⑤ 最初の部屋のコイン保存
+coinRooms["0,0"] = coins.map(c => ({ ...c }));
+
+
+// ★★★ regenerateMaze はここより後に置く ★★★
+
+function regenerateMaze(direction) {
+  let nextX = roomX;
+  let nextY = roomY;
+
+  if (direction === "left") nextX--;
+  if (direction === "right") nextX++;
+  if (direction === "up") nextY--;
+  if (direction === "down") nextY++;
+
+  if (nextX < -2 || nextX > 2 || nextY < -2 || nextY > 2) {
+    return false;
+  }
+
+  const key = `${nextX},${nextY}`;
+  const targetMap = mazeRooms[key] ? mazeRooms[key] : generateMaze(21, 21);
+
+  const tileY = Math.floor((player.y + player.size / 2) / tileSize);
+  const tileX = Math.floor((player.x + player.size / 2) / tileSize);
+
+  let nextTileX = tileX;
+  let nextTileY = tileY;
+
+  if (direction === "left") nextTileX = targetMap[0].length - 2;
+  if (direction === "right") nextTileX = 1;
+  if (direction === "up") nextTileY = targetMap.length - 2;
+  if (direction === "down") nextTileY = 1;
+
+  if (targetMap[nextTileY][nextTileX] === 1) {
+    return false;
+  }
+
+  roomX = nextX;
+  roomY = nextY;
+
+  const realKey = `${roomX},${roomY}`;
+
+  if (mazeRooms[realKey]) {
+    const saved = mazeRooms[realKey];
+    for (let y = 0; y < saved.length; y++) {
+      map[y] = [...saved[y]];
+    }
+  } else {
+    const newMap = generateMaze(21, 21);
+    for (let y = 0; y < newMap.length; y++) {
+      map[y] = [...newMap[y]];
+    }
+
+    if (direction === "left") {
+      for (let y = 0; y < map.length; y++) map[y][map[0].length - 1] = 0;
+    }
+    if (direction === "right") {
+      for (let y = 0; y < map.length; y++) map[y][0] = 0;
+    }
+    if (direction === "up") {
+      for (let x = 0; x < map[0].length; x++) map[map.length - 1][x] = 0;
+    }
+    if (direction === "down") {
+      for (let x = 0; x < map[0].length; x++) map[0][x] = 0;
+    }
+
+    mazeRooms[realKey] = map.map(row => [...row]);
+  }
+
+  walls.length = 0;
+  for (let y = 0; y < map.length; y++) {
+    for (let x = 0; x < map[y].length; x++) {
+      if (map[y][x] === 1) {
+        walls.push({
+          x: x * tileSize,
+          y: y * tileSize,
+          w: tileSize,
+          h: tileSize
+        });
+      }
+    }
+  }
+
+  const coinKey = realKey;
+
+
+  if (coinRooms[coinKey]) {
+  coins.length = 0;   // ★ ここに移動（読み込む直前にだけ消す）
+  for (const c of coinRooms[coinKey]) {
+    coins.push({ ...c });
+  }
+} else {
+  coins.length = 0;   // ★ 新規生成のときだけ消す
+  for (let y = 0; y < map.length; y++) {
+    for (let x = 0; x < map[y].length; x++) {
+      if (map[y][x] === 0) {
+        const baseX = x * tileSize + tileSize / 2;
+        const baseY = y * tileSize + tileSize / 2;
+
+        const jx = baseX + (Math.random() * jitter - jitter / 2);
+        const jy = baseY + (Math.random() * jitter - jitter / 2);
+
+        if (!isCollidingWithWalls(jx, jy, coinSize)) {
+          coins.push({
+            x: jx,
+            y: jy,
+            size: coinSize,
+            collected: false
+          });
+        }
+      }
+    }
+  }
+
+  coinRooms[coinKey] = coins.map(c => ({ ...c }));
+}
+
+
+  setupGoalForCurrentRoom();
+}
+
+function setupGoalForCurrentRoom() {
+  if (roomX !== goalRoomX || roomY !== goalRoomY) {
+    goal = null;
+    return;
+  }
+
+  const floorTiles = [];
+  for (let y = 0; y < map.length; y++) {
+    for (let x = 0; x < map[y].length; x++) {
+      if (map[y][x] === 0) floorTiles.push({ x, y });
+    }
+  }
+
+  if (floorTiles.length === 0) {
+    goal = null;
+    return;
+  }
+
+  const t = floorTiles[Math.floor(Math.random() * floorTiles.length)];
+  const size = 30;
+
+  goal = {
+    x: t.x * tileSize + tileSize / 2 - size / 2,
+    y: t.y * tileSize + tileSize / 2 - size / 2,
+    size: size
+  };
+}
+
+function isCollidingWithWalls(x, y, size) {
+  for (const wall of walls) {
+    if (
+      x < wall.x + wall.w &&
+      x + size > wall.x &&
+      y < wall.y + wall.h &&
+      y + size > wall.y
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function resetGame() {
+
+  // スコアリセット
+  score = 0;
+  timeLeft = 30; 
+  // 部屋座標リセット
+  roomX = 0;
+  roomY = 0;
+
+  // ゴール位置を再抽選
+  goalRoomX = Math.floor(Math.random() * 7) - 3;
+  goalRoomY = Math.floor(Math.random() * 7) - 3;
+  goal = null;
+
+  // 迷路・コイン保存を全部リセット
+  for (const key in mazeRooms) delete mazeRooms[key];
+  for (const key in coinRooms) delete coinRooms[key];
+
+  // ★ 新しい最初の部屋を生成
+  const newMap = generateMaze(21, 21);
+  for (let y = 0; y < newMap.length; y++) {
+    map[y] = [...newMap[y]];
+  }
+
+  mazeRooms["0,0"] = map.map(row => [...row]);
+
+  // ★★★ プレイヤー初期位置は map をコピーした「後」に置く
+  player.x = tileSize * 1 + tileSize / 2 - player.size / 2;
+  player.y = tileSize * 1 + tileSize / 2 - player.size / 2;
+  player.vx = 0;
+  player.vy = 0;
+
+  // 壁再生成
+  walls.length = 0;
+  for (let y = 0; y < map.length; y++) {
+    for (let x = 0; x < map[y].length; x++) {
+      if (map[y][x] === 1) {
+        walls.push({
+          x: x * tileSize,
+          y: y * tileSize,
+          w: tileSize,
+          h: tileSize
+        });
+      }
+    }
+  }
+
+  // コイン再生成
+  coins.length = 0;
+  for (let y = 0; y < map.length; y++) {
+    for (let x = 0; x < map[y].length; x++) {
+      if (map[y][x] === 0) {
+        const baseX = x * tileSize + tileSize / 2;
+        const baseY = y * tileSize + tileSize / 2;
+
+        const jx = baseX + (Math.random() * jitter - jitter / 2);
+        const jy = baseY + (Math.random() * jitter - jitter / 2);
+
+        if (!isCollidingWithWalls(jx, jy, coinSize)) {
+          coins.push({
+            x: jx,
+            y: jy,
+            size: coinSize,
+            collected: false
+          });
+        }
+      }
+    }
+  }
+
+  coinRooms["0,0"] = coins.map(c => ({ ...c }));
+}
+
+
+function update() {
+  player.vx = 0;
+  player.vy = 0;
+
+  // ★ 時間を減らす（1フレームごとに 1/60 秒）
+  timeLeft -= 1 / 60;
+
+  // ★ 時間切れでゲームオーバー
+  if (timeLeft <= 0) {
+    gameState = "gameover";
+  }
+
+  if (keys["ArrowUp"]) player.vy = -player.speed;
+  if (keys["ArrowDown"]) player.vy = player.speed;
+  if (keys["ArrowLeft"]) player.vx = -player.speed;
+  if (keys["ArrowRight"]) player.vx = player.speed;
+
+  player.x += player.vx;
+  player.y += player.vy;
+
+  if (player.x < 0) {
+    const oldY = player.y;
+    if (regenerateMaze("left") !== false) {
+      player.x = canvas.width - player.size - 5;
+      player.y = oldY;
+    } else {
+      player.x = 0;
+    }
+  }
+
+  if (player.x + player.size > canvas.width) {
+    const oldY = player.y;
+    if (regenerateMaze("right") !== false) {
+      player.x = 5;
+      player.y = oldY;
+    } else {
+      player.x = canvas.width - player.size;
+    }
+  }
+
+  if (player.y < 0) {
+    const oldX = player.x;
+    if (regenerateMaze("up") !== false) {
+      player.y = canvas.height - player.size - 5;
+      player.x = oldX;
+    } else {
+      player.y = 0;
+    }
+  }
+
+  if (player.y + player.size > canvas.height) {
+    const oldX = player.x;
+    if (regenerateMaze("down") !== false) {
+      player.y = 5;
+      player.x = oldX;
+    } else {
+      player.y = canvas.height - player.size;
+    }
+  }
+
+  for (const wall of walls) {
+    if (
+      player.x < wall.x + wall.w &&
+      player.x + player.size > wall.x &&
+      player.y < wall.y + wall.h &&
+      player.y + player.size > wall.y
+    ) {
+      player.x -= player.vx;
+      player.y -= player.vy;
+      player.vx = 0;
+      player.vy = 0;
+    }
+  }
+
+  for (const coin of coins) {
+  if (!coin.collected) {
+    if (
+      player.x < coin.x + coin.size &&
+      player.x + player.size > coin.x &&
+      player.y < coin.y + coin.size &&
+      player.y + player.size > coin.y
+    ) {
+      coin.collected = true;
+      score++;
+
+      // ★★★ 追加：coinRooms にも反映する ★★★
+      const key = `${roomX},${roomY}`;
+      if (coinRooms[key]) {
+        const saved = coinRooms[key].find(c => c.x === coin.x && c.y === coin.y);
+        if (saved) saved.collected = true;
+      }
+    }
+  }
+}
+
+
+ if (goal) {
+  if (
+    player.x < goal.x + goal.size &&
+    player.x + player.size > goal.x &&
+    player.y < goal.y + goal.size &&
+    player.y + player.size > goal.y
+  ) {
+    gameState = "goal";   // ★ alert の代わりに画面遷移
+  }
+}
+
+}
+
+function drawTitle() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "white";
+  ctx.font = "48px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("迷路ゲーム", canvas.width / 2, canvas.height / 2 - 40);
+
+  ctx.font = "24px sans-serif";
+  ctx.fillText("スペースキーでスタート", canvas.width / 2, canvas.height / 2 + 40);
+}
+
+function drawGoalScreen() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "yellow";
+  ctx.font = "48px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("クリア！！", canvas.width / 2, canvas.height / 2 - 40);
+
+  ctx.font = "24px sans-serif";
+  ctx.fillText("Score: " + score, canvas.width / 2, canvas.height / 2 + 10);  // ★追加
+
+  ctx.fillText("スペースキーでタイトルへ戻る", canvas.width / 2, canvas.height / 2 + 40);
+}
+
+function drawGameOverScreen() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "red";
+  ctx.font = "48px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("ゲームオーバー", canvas.width / 2, canvas.height / 2 - 40);
+
+  ctx.font = "24px sans-serif";
+  ctx.fillStyle = "white";
+  ctx.fillText("Score: " + score, canvas.width / 2, canvas.height / 2 + 10);
+
+  ctx.fillText("スペースキーでタイトルへ戻る", canvas.width / 2, canvas.height / 2 + 40);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "gray";
+  for (const wall of walls) {
+    ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+  }
+
+  for (const coin of coins) {
+    if (!coin.collected) {
+      ctx.fillStyle = "yellow";
+      ctx.beginPath();
+      ctx.arc(coin.x + coin.size/2, coin.y + coin.size/2, coin.size/2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  if (goal) {
+    ctx.fillStyle = "red";
+    ctx.fillRect(goal.x, goal.y, goal.size, goal.size);
+  }
+
+  ctx.fillStyle = "cyan";
+  ctx.fillRect(player.x, player.y, player.size, player.size);
+
+  ctx.fillStyle = "white";
+  ctx.font = "20px sans-serif";
+  ctx.fillText("Score: " + score, 10, 30);
+}
+
+function loop() {
+  if (gameState === "title") {
+    drawTitle();
+  } else if (gameState === "play") {
+    update();
+    draw();
+  } else if (gameState === "goal") {
+    drawGoalScreen();
+  } else if (gameState === "gameover") {
+    drawGameOverScreen();   
+  }
+
+  requestAnimationFrame(loop);
+}
+
+
+
+loop();
